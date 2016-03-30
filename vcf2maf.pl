@@ -172,6 +172,8 @@ unless( @ARGV and $ARGV[0] =~ m/^-/ ) {
 my ( $man, $help ) = ( 0, 0 );
 my ( $input_vcf, $output_maf, $custom_enst_file );
 my ( $vcf_tumor_id, $vcf_normal_id );
+my $copythrough;
+my $noannotate = 0;
 GetOptions(
     'help!' => \$help,
     'man!' => \$man,
@@ -189,7 +191,9 @@ GetOptions(
     'species=s' => \$species,
     'ncbi-build=s' => \$ncbi_build,
     'maf-center=s' => \$maf_center,
-    'min-hom-vaf=s' => \$min_hom_vaf
+    'min-hom-vaf=s' => \$min_hom_vaf,
+    'copythrough=s' => \$copythrough,
+    'no-annotate' => \$noannotate
 ) or pod2usage( -verbose => 1, -input => \*DATA, -exitval => 2 );
 pod2usage( -verbose => 1, -input => \*DATA, -exitval => 0 ) if( $help );
 pod2usage( -verbose => 2, -input => \*DATA, -exitval => 0 ) if( $man );
@@ -215,7 +219,7 @@ if( $input_vcf ) {
     $output_vcf =~ s/(\.vcf)*$/.vep.vcf/;
 
     # Skip running VEP if an annotated VCF already exists
-    unless( -s $output_vcf ) {
+    unless( -s $output_vcf or $noannotate ) {
         warn "STATUS: Running VEP and writing to: $output_vcf\n";
         # Make sure we can find the VEP script and the reference FASTA
         ( -s "$vep_path/variant_effect_predictor.pl" ) or die "ERROR: Cannot find VEP script variant_effect_predictor.pl in path: $vep_path\n";
@@ -243,6 +247,10 @@ else {
     die "ERROR: Please specify an input file: input-vcf. STDIN is not supported.\n";
 }
 
+if ($noannotate){
+    $output_vcf = $input_vcf;
+}
+
 # Define default MAF Header (https://wiki.nci.nih.gov/x/eJaPAQ) with our vcf2maf additions
 my @maf_header = qw(
     Hugo_Symbol Entrez_Gene_Id Center NCBI_Build Chromosome Start_Position End_Position Strand
@@ -265,6 +273,14 @@ my @ann_cols = qw( Allele Gene Feature Feature_type Consequence cDNA_position CD
     ExAC_AF_NFE ExAC_AF_OTH ExAC_AF_SAS GENE_PHENO FILTER );
 my @ann_cols_format; # To store the actual order of VEP data, that may differ between runs
 push( @maf_header, @ann_cols );
+
+# if there are copythrough options, push those to the maf_header
+my @copy_cols = ();
+if ($copythrough){
+    @copy_cols = split( /,/, $copythrough );
+    push( @maf_header, @copy_cols );
+}
+
 
 # Parse through each variant in the annotated VCF, pull out ANN/CSQ from the INFO column, and choose
 # one transcript per variant whose annotation will be used in the MAF
@@ -439,6 +455,9 @@ while( my $line = $vcf_fh->getline ) {
             # Fix HGVSp_Short for Silent mutations, so it mentions the amino-acid and position
             if( $effect{Consequence} eq "synonymous_variant" ) {
                 my ( $p_pos ) = $effect{Protein_position} =~ m/^(\d+)(-\d+)?\/\d+$/;
+                if (not defined $p_pos){
+                    $p_pos = $effect{Protein_position};
+                }
                 my $aa = $effect{Amino_acids};
                 $effect{HGVSp_Short} = "p.$aa" . $p_pos . $aa;
             }
@@ -489,7 +508,7 @@ while( my $line = $vcf_fh->getline ) {
     }
 
     # Construct the MAF columns from the $maf_effect hash, and print to output
-    %maf_line = map{( $_, ( $maf_effect->{$_} ? $maf_effect->{$_} : '' ))} @maf_header;
+    %maf_line = map{( $_, ( $maf_effect->{$_} ? $maf_effect->{$_} : '.' ))} @maf_header;
     $maf_line{Hugo_Symbol} = $maf_effect->{Transcript_ID} unless( $maf_effect->{Hugo_Symbol} );
     $maf_line{Entrez_Gene_Id} = '0';
     $maf_line{Center} = $maf_center;
@@ -546,12 +565,18 @@ while( my $line = $vcf_fh->getline ) {
     # any ExAC subpopulation, unless ClinVar says pathogenic, risk_factor, or protective
     my ( $max_subpop_maf, $subpop_count ) = ( 0.0004, 0 );
     foreach my $subpop ( qw( ExAC_AF ExAC_AF_AFR ExAC_AF_AMR ExAC_AF_EAS ExAC_AF_FIN ExAC_AF_NFE ExAC_AF_OTH ExAC_AF_SAS )) {
-        $subpop_count++ if( $maf_line{$subpop} ne "" and $maf_line{$subpop} > $max_subpop_maf );
+        $subpop_count++ if( $maf_line{$subpop} ne "." and $maf_line{$subpop} > $max_subpop_maf );
     }
     if( $subpop_count > 0 and $maf_line{CLIN_SIG} !~ /pathogenic|risk_factor|protective/ ) {
         $filter = (( $filter eq "PASS" or $filter eq "." ) ? "common_variant" : "$filter,common_variant" );
     }
     $maf_line{FILTER} = $filter;
+
+    # pull forward the things in @copythrough if they are there
+    foreach my $colname ( @copy_cols ){
+        $maf_line{$colname} = $info{$colname} ? $info{$colname} : '.';
+    }
+
 
     # At this point, we've generated all we can about this variant, so write it to the MAF
     $maf_fh->print( join( "\t", map{ $maf_line{$_} } @maf_header ) . "\n" );

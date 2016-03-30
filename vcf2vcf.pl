@@ -85,6 +85,9 @@ while( my $line = $vcf_in_fh->getline ) {
         elsif( $line =~ m/^##FILTER=<ID=([^,]+)/ and !defined $filter_tags{$1}) {
             $vcf_out_fh->print( $line );
         }
+        else {
+            $vcf_out_fh->print( $line );
+        }
         next;
     }
 
@@ -132,11 +135,16 @@ while( my $line = $vcf_in_fh->getline ) {
             # In case of polyploid calls, choose the first non-REF allele, if any
             ( $var_allele_idx ) = grep {$_ ne "0"} @genotype;
             $var_allele_idx = 1 unless( defined $var_allele_idx and $var_allele_idx =~ m/^\d+$/ );
+            $tum_info{GT} =~ s/$var_allele_idx/1/;
         }
 
         # Standardize AD and DP based on data in the genotype fields
         FixAlleleDepths( \@alleles, $var_allele_idx, \%tum_info );
         $tum_info{GT} = "./." unless( defined $tum_info{GT} and $tum_info{GT} ne '.' );
+    }
+
+    if ( scalar(@alleles) > 1 ){
+        $alt = $alleles[$var_allele_idx];
     }
 
     # Parse through info from the normal genotype field
@@ -148,7 +156,10 @@ while( my $line = $vcf_in_fh->getline ) {
 
         # Standardize AD and DP based on data in the genotype fields
         FixAlleleDepths( \@alleles, $var_allele_idx, \%nrm_info );
-        $nrm_info{GT} = "./." unless( defined $nrm_info{GT} and $nrm_info{GT} ne '.' );
+        $tum_info{GT} = "./." unless( defined $tum_info{GT} and $tum_info{GT} ne '.' );
+
+        # Fix the GT
+        $nrm_info{GT} =~ s/$var_allele_idx/1/;
     }
 
     # Add more filter tags to the FILTER field, if --add-filters was specified
@@ -257,6 +268,11 @@ sub FixAlleleDepths {
     if(( defined $depths[0] and defined $depths[$var_allele_idx] ) and ( !defined $fmt_info{DP} or $fmt_info{DP} eq '.' )) {
         $fmt_info{DP} = 0;
         map{$fmt_info{DP} += $_ if($_ and $_ ne '.')} @depths;
+    }
+
+    # we only report the one allele so collapse the depths to this.
+    if( scalar( @depths ) > 2 ){
+        @depths = @depths[0, $var_allele_idx];
     }
 
     # Put all our changes back into the hash/array references that were passed over
