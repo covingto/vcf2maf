@@ -74,7 +74,8 @@ sub GetEffectPriority {
         'feature_truncation' => 18, # A sequence variant that causes the reduction of a genomic feature, with regard to the reference sequence
         'intergenic_variant' => 19, # A sequence variant located in the intergenic region, between genes
         'intergenic_region' => 19, # snpEff-specific effect that should really be intergenic_variant
-        '' => 20
+        '' => 20,
+        '?' => 20
     );
     $effectPriority{$effect} or die "ERROR: Unrecognized effect \"$effect\". Please update your hashes!\n";
     return $effectPriority{$effect};
